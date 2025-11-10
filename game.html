@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Game iwan — Game Sederhana</title>
+  <style>
+    /* Gaya sederhana, responsive */
+    :root{--bg:#0b1220;--card:#0f1724;--accent:#ffd166;--text:#eef2ff}
+    *{box-sizing:border-box}
+    html,body{height:100%;margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,'Helvetica Neue',Arial}
+    body{background:linear-gradient(180deg,#071126 0%,#0b1220 100%);display:flex;align-items:center;justify-content:center;color:var(--text)}
+    .game-wrap{width:100%;max-width:720px;padding:18px}
+    .panel{background:rgba(255,255,255,0.03);border-radius:14px;padding:16px;box-shadow:0 6px 30px rgba(2,6,23,0.6)}
+    header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+    header h1{font-size:18px;margin:0}
+    .hud{display:flex;gap:12px;align-items:center}
+    .hud div{background:rgba(255,255,255,0.03);padding:6px 10px;border-radius:8px;min-width:70px;text-align:center}
+    canvas{display:block;width:100%;height:420px;background:linear-gradient(#021029,#05203f);border-radius:10px}
+    .controls{display:flex;gap:8px;align-items:center;margin-top:12px}
+    button{background:var(--accent);border:none;color:#08202b;padding:8px 12px;border-radius:8px;font-weight:600;cursor:pointer}
+    .small{background:transparent;border:1px solid rgba(255,255,255,0.06);color:var(--text);padding:6px 10px}
+    .footer{font-size:13px;opacity:0.8;margin-top:10px}
+    @media (max-width:420px){canvas{height:320px}}
+  </style>
+</head>
+<body>
+  <div class="game-wrap">
+    <div class="panel">
+      <header>
+        <h1>Game iwan</h1>
+        <div class="hud">
+          <div id="score">Score: 0</div>
+          <div id="level">Level: 1</div>
+          <div id="lives">Lives: 3</div>
+        </div>
+      </header>
+
+      <canvas id="game" width="800" height="420"></canvas>
+
+      <div class="controls">
+        <button id="start">Mulai / Reset</button>
+        <button id="pause" class="small">Pause</button>
+        <div style="margin-left:auto">Gunakan tombol Kiri/Kanan atau sentuh kiri/kanan layar</div>
+      </div>
+
+      <div class="footer">Tujuan: Tangkap bintang yang jatuh menggunakan kotak. Hindari komet merah! (Gratis, sederhana)</div>
+    </div>
+  </div>
+
+  <script>
+  // ==========================
+  // Catch the Stars - Game JS
+  // Bahasa: Indonesia (komentar)
+  // ==========================
+
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  // ukuran internal untuk menjaga rasio
+  const W = canvas.width; const H = canvas.height;
+
+  // Elemen UI
+  const scoreEl = document.getElementById('score');
+  const levelEl = document.getElementById('level');
+  const livesEl = document.getElementById('lives');
+  const startBtn = document.getElementById('start');
+  const pauseBtn = document.getElementById('pause');
+
+  // State game
+  let score = 0;
+  let level = 1;
+  let lives = 3;
+  let running = false;
+  let paused = false;
+  let lastTime = 0;
+  let spawnTimer = 0;
+  let spawnInterval = 1200; // ms
+  let objects = [];
+
+  // Pemain (keranjang)
+  const player = {
+    x: W/2,
+    y: H - 40,
+    w: 120,
+    h: 18,
+    speed: 600 // px per second
+  };
+
+  // Kontrol input
+  const input = {left:false,right:false,touchX:null};
+  window.addEventListener('keydown', e => {
+    if(e.key === 'ArrowLeft') input.left = true;
+    if(e.key === 'ArrowRight') input.right = true;
+  });
+  window.addEventListener('keyup', e => {
+    if(e.key === 'ArrowLeft') input.left = false;
+    if(e.key === 'ArrowRight') input.right = false;
+  });
+
+  // Sentuh/klik untuk perangkat layar sentuh
+  canvas.addEventListener('touchstart', ev => {
+    const t = ev.touches[0];
+    handleTouch(t.clientX);
+    ev.preventDefault();
+  }, {passive:false});
+  canvas.addEventListener('touchmove', ev => {
+    const t = ev.touches[0];
+    handleTouch(t.clientX);
+    ev.preventDefault();
+  }, {passive:false});
+  canvas.addEventListener('mousedown', e => handleTouch(e.clientX));
+
+  function handleTouch(clientX){
+    // ubah posisi pemain berdasarkan sentuh relatif pada canvas
+    const rect = canvas.getBoundingClientRect();
+    const x = (clientX - rect.left) * (W / rect.width);
+    // sentuh kiri/kanan untuk gerak cepat
+    if(x < W/2) input.left = true, input.right = false;
+    else input.right = true, input.left = false;
+    // hapus gerak setelah 200ms (sentuhan singkat)
+    clearTimeout(handleTouch._t);
+    handleTouch._t = setTimeout(()=>{input.left=false;input.right=false}, 220);
+  }
+
+  // Membuat objek jatuh
+  function spawn(){
+    const t = Math.random();
+    // 70% bintang, 30% komet (bahaya)
+    const type = t < 0.7 ? 'star' : 'comet';
+    const size = type === 'star' ? (18 + Math.random()*14) : (22 + Math.random()*12);
+    const obj = {
+      type,
+      x: 20 + Math.random()*(W-40),
+      y: -size,
+      r: size/2,
+      vy: 80 + Math.random()*120 + level*15, // kecepatan vertikal
+      angle: Math.random()*Math.PI*2,
+      vr: (Math.random()-0.5)*2
+    };
+    objects.push(obj);
+  }
+
+  // Reset / Start game
+  function startGame(){
+    score = 0; level = 1; lives = 3; objects = []; running = true; paused = false;
+    spawnInterval = 1200;
+    lastTime = performance.now();
+    requestAnimationFrame(loop);
+    updateHUD();
+  }
+
+  // Pause toggle
+  pauseBtn.addEventListener('click', ()=>{
+    if(!running) return;
+    paused = !paused;
+    pauseBtn.textContent = paused ? 'Resume' : 'Pause';
+    if(!paused) { lastTime = performance.now(); requestAnimationFrame(loop); }
+  });
+
+  startBtn.addEventListener('click', ()=> startGame());
+
+  // Loop utama
+  function loop(ts){
+    if(!running) return;
+    if(paused) return;
+    const dt = Math.min(40, ts - lastTime); // ms, cap
+    lastTime = ts;
+
+    // spawn logic
+    spawnTimer += dt;
+    if(spawnTimer > spawnInterval){ spawnTimer = 0; spawn(); }
+
+    // update level difficulty berdasarkan score
+    level = 1 + Math.floor(score / 10);
+    spawnInterval = Math.max(350, 1200 - level*80);
+
+    update(dt/1000);
+    render();
+
+    if(running && !paused) requestAnimationFrame(loop);
+  }
+
+  function update(s){
+    // update player pos
+    if(input.left) player.x -= player.speed * s;
+    if(input.right) player.x += player.speed * s;
+    // clamp
+    player.x = Math.max(player.w/2, Math.min(W - player.w/2, player.x));
+
+    // update objects
+    for(let i = objects.length-1; i >=0; i--){
+      const o = objects[i];
+      o.y += o.vy * s;
+      o.angle += o.vr * s;
+
+      // check collision with player (simple AABB / circle)
+      const px = player.x; const py = player.y;
+      if(o.y + o.r >= py - player.h/2 && o.y - o.r <= py + player.h/2){
+        if(o.x >= px - player.w/2 && o.x <= px + player.w/2){
+          // kena
+          if(o.type === 'star'){
+            score += 1 + Math.floor(level/2);
+          } else {
+            // komet -> kehilangan nyawa
+            lives -= 1;
+          }
+          objects.splice(i,1);
+          updateHUD();
+          continue;
+        }
+      }
+
+      // if fell below screen
+      if(o.y - o.r > H){
+        // jika bintang terlewat -> minus poin
+        if(o.type === 'star') score = Math.max(0, score - 1);
+        objects.splice(i,1);
+        updateHUD();
+      }
+    }
+
+    // cek game over
+    if(lives <= 0){ running = false; setTimeout(()=> alert('Game over! Skor Anda: ' + score), 80); }
+  }
+
+  function updateHUD(){
+    scoreEl.textContent = 'Score: ' + score;
+    levelEl.textContent = 'Level: ' + level;
+    livesEl.textContent = 'Lives: ' + lives;
+  }
+
+  // Render
+  function render(){
+    // clear
+    ctx.clearRect(0,0,W,H);
+
+    // background subtle
+    const g = ctx.createLinearGradient(0,0,0,H);
+    g.addColorStop(0,'rgba(255,255,255,0.02)');
+    g.addColorStop(1,'rgba(0,0,0,0.05)');
+    ctx.fillStyle = g; ctx.fillRect(0,0,W,H);
+
+    // draw stars/comets
+    for(const o of objects){
+      ctx.save();
+      ctx.translate(o.x,o.y);
+      ctx.rotate(o.angle);
+      if(o.type === 'star') drawStar(ctx,0,0,o.r,5);
+      else drawComet(ctx,0,0,o.r);
+      ctx.restore();
+    }
+
+    // draw player (box/keranjang)
+    ctx.fillStyle = '#ffd166';
+    roundRect(ctx, player.x - player.w/2, player.y - player.h/2, player.w, player.h, 8, true, false);
+    // shadow
+    ctx.fillStyle = 'rgba(0,0,0,0.2)';
+    ctx.fillRect(player.x - 24, player.y+8, 48, 6);
+  }
+
+  // Helpers: draw star
+  function drawStar(c,x,y,r,pts){
+    c.beginPath();
+    for(let i=0;i<pts;i++){
+      const a = i*(Math.PI*2)/pts - Math.PI/2;
+      const sx = Math.cos(a)*r;
+      const sy = Math.sin(a)*r;
+      c.lineTo(sx,sy);
+      const a2 = a + Math.PI/pts;
+      c.lineTo(Math.cos(a2)*(r*0.45), Math.sin(a2)*(r*0.45));
+    }
+    c.closePath();
+    c.fillStyle = '#fff7c2';
+    c.fill();
+    c.strokeStyle = 'rgba(255,197,38,0.6)';
+    c.lineWidth = 1;
+    c.stroke();
+  }
+
+  function drawComet(c,x,y,r){
+    // core
+    c.beginPath();
+    c.ellipse(0,0,r*0.7,r*0.5,0,0,Math.PI*2);
+    c.fillStyle = '#ff6b6b'; c.fill();
+    // tail
+    c.beginPath();
+    c.moveTo(-r*0.6, -r*0.2);
+    c.quadraticCurveTo(-r*3, 0, -r*0.6, r*0.2);
+    c.fillStyle = 'rgba(255,107,107,0.18)';
+    c.fill();
+  }
+
+  // rounded rectangle helper
+  function roundRect(ctx,x,y,w,h,r,fill,stroke){
+    if(typeof r === 'undefined') r = 5;
+    ctx.beginPath();
+    ctx.moveTo(x+r,y);
+    ctx.arcTo(x+w,y,x+w,y+h,r);
+    ctx.arcTo(x+w,y+h,x,y+h,r);
+    ctx.arcTo(x,y+h,x,y,r);
+    ctx.arcTo(x,y,x+w,y,r);
+    ctx.closePath();
+    if(fill) ctx.fill();
+    if(stroke) ctx.stroke();
+  }
+
+  // Start paused, show short instructions overlay until start
+  (function initOverlay(){
+    ctx.fillStyle = 'rgba(3,8,15,0.6)';
+    ctx.fillRect(0,0,W,H);
+    ctx.fillStyle = '#fff';
+    ctx.font = '20px system-ui'; ctx.textAlign='center';
+    ctx.fillText('Tekan "Mulai" untuk bermain', W/2, H/2 - 10);
+    ctx.font = '13px system-ui';
+    ctx.fillText('Gunakan Tombol Kiri/Kanan atau Sentuh Layar', W/2, H/2 + 18);
+  })();
+
+  // Resize canvas css-to-internal on window resize to keep crispness
+  function resizeCanvas(){
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = 800; // tetapkan internal ukuran agar logika tetap
+    canvas.height = Math.round(rect.height * (800/rect.width));
+  }
+
+  // jangan otomatis jalankan; user klik Mulai
+  updateHUD();
+
+  // Penanganan aksesibilitas: restart dengan R
+  window.addEventListener('keydown', e => { if(e.key.toLowerCase() === 'r') startGame(); });
+
+  </script>
+</body>
+</html>
